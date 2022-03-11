@@ -375,6 +375,11 @@ int main(int argc, char **argv, char **const envp) {
 
   auto SignalDelegation = std::make_unique<FEX::HLE::SignalDelegator>();
 
+  // XXX this needs to be cleaned up
+  SignalDelegation->RegisterFrontendHostSignalHandler(SIGSEGV, [](FEXCore::Core::InternalThreadState *Thread, int Signal, void *info, void *ucontext) -> bool {
+    return false;
+  }, true);
+
   SignalDelegation->RegisterFrontendHostSignalHandler(SIGILL, [&SignalDelegation](FEXCore::Core::InternalThreadState *Thread, int Signal, void *info, void *ucontext) -> bool {
     ucontext_t* _context = (ucontext_t*)ucontext;
     auto &mcontext = _context->uc_mcontext;

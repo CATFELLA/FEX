@@ -193,6 +193,18 @@ namespace FEXCore::Context {
     return CTX->RemoveNamedRegion(Base, Length);
   }
 
+  void SetMemoryMap(FEXCore::Context::Context *CTX, uintptr_t Base, uintptr_t Length, bool Writable) {
+    CTX->SetMemoryMap(Base, Length, Writable);
+  }
+
+  bool HandleSegfault(FEXCore::Core::InternalThreadState *Thread, uint64_t FaultAddr) {
+    return Thread->CTX->HandleSegfault(Thread, FaultAddr);
+  }
+
+  void ClearMemoryMap(FEXCore::Context::Context *CTX, uintptr_t Base, uintptr_t Length) {
+    CTX->ClearMemoryMap(Base, Length);
+  }
+
 namespace Debug {
   void CompileRIP(FEXCore::Context::Context *CTX, uint64_t RIP) {
     CTX->CompileRIP(CTX->ParentThread, RIP);

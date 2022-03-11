@@ -1,6 +1,7 @@
 #include <FEXCore/Core/SignalDelegator.h>
 #include <FEXCore/Utils/LogManager.h>
 #include <FEXHeaderUtils/Syscalls.h>
+#include <FEXCore/Core/Context.h>
 
 #include <unistd.h>
 #include <signal.h>
@@ -89,6 +90,14 @@ namespace FEXCore {
   void SignalDelegator::HandleSignal(int Signal, void *Info, void *UContext) {
     // Let the host take first stab at handling the signal
     auto Thread = GetTLSThread();
+
+    if (Signal == SIGSEGV) {
+      auto FaultAddress = (uintptr_t)((siginfo_t*)Info)->si_addr;
+      if (FEXCore::Context::HandleSegfault(Thread, FaultAddress)) {
+        return;
+      }
+    }
+
     HostSignalHandler &Handler = HostHandlers[Signal];
 
     if (!Thread) {

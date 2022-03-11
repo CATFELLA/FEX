@@ -269,8 +269,19 @@ namespace FEXCore::Context {
 
     uint8_t GetGPRSize() const { return Config.Is64BitMode ? 8 : 4; }
 
+    std::mutex MemoryEntryMutex{};
+    struct MemoryEntry {
+      uint64_t Length;
+      bool Writable;
+    };
+
     void AddNamedRegion(uintptr_t Base, uintptr_t Size, uintptr_t Offset, const std::string &filename);
     void RemoveNamedRegion(uintptr_t Base, uintptr_t Size);
+
+    std::map<uint64_t, MemoryEntry> MemoryMaps;
+    void SetMemoryMap(uintptr_t Base, uintptr_t Size, bool Writable);
+    void ClearMemoryMap(uintptr_t Base, uintptr_t Size);
+    bool HandleSegfault(FEXCore::Core::InternalThreadState *Thread, uintptr_t FaultAddress);
 
     FEXCore::JITSymbols Symbols;
 

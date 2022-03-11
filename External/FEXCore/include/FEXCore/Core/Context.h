@@ -238,6 +238,11 @@ namespace FEXCore::Context {
 
   FEX_DEFAULT_VISIBILITY void AddNamedRegion(FEXCore::Context::Context *CTX, uintptr_t Base, uintptr_t Length, uintptr_t Offset, const std::string& Name);
   FEX_DEFAULT_VISIBILITY void RemoveNamedRegion(FEXCore::Context::Context *CTX, uintptr_t Base, uintptr_t Length);
+
+  FEX_DEFAULT_VISIBILITY void SetMemoryMap(FEXCore::Context::Context *CTX, uintptr_t Base, uintptr_t Length, bool Writable);
+  FEX_DEFAULT_VISIBILITY void ClearMemoryMap(FEXCore::Context::Context *CTX, uintptr_t Base, uintptr_t Length);
+  FEX_DEFAULT_VISIBILITY bool HandleSegfault(FEXCore::Core::InternalThreadState *Thread, uint64_t FaultAddr);
+
   FEX_DEFAULT_VISIBILITY void SetAOTIRLoader(FEXCore::Context::Context *CTX, std::function<int(const std::string&)> CacheReader);
   FEX_DEFAULT_VISIBILITY void SetAOTIRWriter(FEXCore::Context::Context *CTX, std::function<std::unique_ptr<std::ofstream>(const std::string&)> CacheWriter);
   FEX_DEFAULT_VISIBILITY void SetAOTIRRenamer(FEXCore::Context::Context *CTX, std::function<void(const std::string&)> CacheRenamer);

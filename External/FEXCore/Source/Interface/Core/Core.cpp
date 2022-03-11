@@ -21,6 +21,7 @@ $end_info$
 #include "Interface/IR/Passes/RegisterAllocationPass.h"
 #include "Interface/IR/Passes.h"
 #include "Interface/IR/PassManager.h"
+#include <FEXHeaderUtils/ScopedSignalMask.h>
 
 #include <FEXCore/Config/Config.h>
 #include <FEXCore/Core/CodeLoader.h>
@@ -140,6 +141,9 @@ std::string_view const& GetGRegName(unsigned Reg) {
   return RegNames[Reg];
 }
 } // namespace FEXCore::Core
+
+constexpr static uint64_t PAGE_SIZE = 4096;
+constexpr static uint64_t PAGE_MASK = PAGE_SIZE - 1;
 
 namespace FEXCore::Context {
   Context::Context()
@@ -426,6 +430,7 @@ namespace FEXCore::Context {
           : nullptr),
         decltype(Entry.DebugData)(new Core::DebugData())
       };
+      std::lock_guard<std::recursive_mutex> lk(Thread->LookupCache->WriteLock);
       Thread->LocalIRCache.insert({Addr, std::move(Entry)});
     };
 
@@ -611,6 +616,8 @@ namespace FEXCore::Context {
   }
 
   void Context::ClearCodeCache(FEXCore::Core::InternalThreadState *Thread, bool AlsoClearIRCache) {
+    std::lock_guard<std::recursive_mutex> lk(Thread->LookupCache->WriteLock);
+
     Thread->LookupCache->ClearCache();
     Thread->CPUBackend->ClearCache();
     if (Thread->CompileService) {
@@ -831,6 +838,7 @@ namespace FEXCore::Context {
     uint64_t StartAddr {};
     uint64_t Length {};
 
+    std::lock_guard<std::recursive_mutex> lk(Thread->LookupCache->WriteLock);
     // Do we already have this in the IR cache?
     auto LocalEntry = Thread->LocalIRCache.find(GuestRIP);
 
@@ -885,6 +893,13 @@ namespace FEXCore::Context {
     if (IRList == nullptr) {
       return {};
     }
+
+    if (Thread->CTX->Config.SMCChecks == FEXCore::Config::CONFIG_SMC_MTRACK) {
+      int rv = mprotect((void*)(GuestRIP & ~PAGE_MASK), (GuestRIP & PAGE_MASK) + Length, PROT_READ);
+
+      LogMan::Throw::AFmt(rv == 0, "mprotect failed");
+    }
+
     // Attempt to get the CPU backend to compile this code
     return {
       .CompiledCode = Thread->CPUBackend->CompileCode(GuestRIP, IRList, DebugData, RAData),
@@ -1055,7 +1070,11 @@ namespace FEXCore::Context {
 
   void FlushCodeRange(FEXCore::Core::InternalThreadState *Thread, uint64_t Start, uint64_t Length) {
 
-    if (Thread->CTX->Config.SMCChecks == FEXCore::Config::CONFIG_SMC_MMAN) {
+    if (Thread->CTX->Config.SMCChecks == FEXCore::Config::CONFIG_SMC_MMAN || 
+        Thread->CTX->Config.SMCChecks == FEXCore::Config::CONFIG_SMC_MTRACK) {
+      
+      std::lock_guard<std::recursive_mutex> lk(Thread->LookupCache->WriteLock);
+
       auto lower = Thread->LookupCache->CodePages.lower_bound(Start >> 12);
       auto upper = Thread->LookupCache->CodePages.upper_bound((Start + Length) >> 12);
 
@@ -1068,6 +1087,7 @@ namespace FEXCore::Context {
   }
 
   void Context::RemoveCodeEntry(FEXCore::Core::InternalThreadState *Thread, uint64_t GuestRIP) {
+    std::lock_guard<std::recursive_mutex> lk(Thread->LookupCache->WriteLock);
     Thread->LocalIRCache.erase(GuestRIP);
     Thread->LookupCache->Erase(GuestRIP);
   }
@@ -1095,6 +1115,7 @@ namespace FEXCore::Context {
   }
 
   bool Context::GetDebugDataForRIP(uint64_t RIP, FEXCore::Core::DebugData *Data) {
+    std::lock_guard<std::recursive_mutex> lk(ParentThread->LookupCache->WriteLock);
     auto it = ParentThread->LocalIRCache.find(RIP);
     if (it == ParentThread->LocalIRCache.end()) {
       return false;
@@ -1126,6 +1147,107 @@ namespace FEXCore::Context {
 
   void Context::RemoveNamedRegion(uintptr_t Base, uintptr_t Size) {
     IRCaptureCache.RemoveNamedRegion(Base, Size);
+  }
+
+  static void ClearMemoryInternal(std::map<uint64_t, Context::MemoryEntry> &MemoryMaps, uintptr_t Base, uintptr_t Size) {
+    auto MapEnd = MemoryMaps.upper_bound(Base);
+
+    auto Top = Base + Size;
+
+    while (MapEnd != MemoryMaps.begin()) {
+      MapEnd--;
+
+      auto MapBase = MapEnd->first;
+      auto MapTop = MapBase + MapEnd->second.Length;
+
+      if (MapTop <= Base) {
+        break;
+      } else if (MapBase < Base && MapTop < Top) {
+        // trim end
+        MapEnd->second.Length = Base - MapBase;
+      } else if (MapBase < Base && MapTop >= Top) {
+        // split
+
+        // trim first half
+        MapEnd->second.Length = Base - MapBase;
+
+        // insert second half
+        MemoryMaps.emplace(Top, Context::MemoryEntry{ MapTop - Top, MapEnd->second.Writable });
+      } else if (MapBase >= Base && MapTop <= Top) {
+        // delete
+        MapEnd = MemoryMaps.erase(MapEnd);
+      } else if (MapBase >= Base && MapTop > Top) {
+        // trim start
+
+        // insert second half
+        MemoryMaps.emplace(Top, Context::MemoryEntry{ MapTop - Top, MapEnd->second.Writable });
+
+        // erase original
+        MapEnd = MemoryMaps.erase(MapEnd);
+      } else {
+        ERROR_AND_DIE_FMT("Invalid Case");
+      }
+    }
+  }
+
+  void Context::SetMemoryMap(uintptr_t Base, uintptr_t Size, bool Writable) {
+    FHU::ScopedSignalMaskWithMutex lk(MemoryEntryMutex);
+
+    // remove previous mappings
+    ClearMemoryInternal(MemoryMaps, Base, Size);
+
+    // Insert new mapping
+    MemoryMaps.emplace(Base, MemoryEntry{ Size, Writable });
+
+    /*
+    LogMan::Msg::D("SetMemoryMap(%016lX - %016lX, %d)", Base, Base + Size, Writable);
+
+    for (auto Map: MemoryMaps) {
+      LogMan::Msg::D(" - %016lX - %016lX - %d", Map.first, Map.first + Map.second.Length, Map.second.Writable);
+    }
+    */
+  }
+
+  void Context::ClearMemoryMap(uintptr_t Base, uintptr_t Size) {
+    FHU::ScopedSignalMaskWithMutex lk(MemoryEntryMutex);
+
+    ClearMemoryInternal(MemoryMaps, Base, Size);
+
+    /*
+    auto Top = Base + Size;
+
+    LogMan::Msg::D("ClearMemoryMap(%016lX - %016lX)", Base, Top);
+
+    for (auto Map: MemoryMaps) {
+      LogMan::Msg::D(" - %016lX - %016lX - %d", Map.first, Map.first + Map.second.Length, Map.second.Writable);
+    }
+    */
+  }
+
+  bool Context::HandleSegfault(FEXCore::Core::InternalThreadState *Thread, uintptr_t FaultAddress) {
+    
+    if (Thread->CTX->Config.SMCChecks == FEXCore::Config::CONFIG_SMC_MTRACK) {
+      FHU::ScopedSignalMaskWithMutex lk(MemoryEntryMutex);
+
+      auto Entry = MemoryMaps.upper_bound(FaultAddress);
+
+      if (Entry != MemoryMaps.begin()) {
+        --Entry;
+
+        if (Entry->first <= FaultAddress && (Entry->first + Entry->second.Length) > FaultAddress) {
+          if (Entry->second.Writable) {
+            std::lock_guard<std::mutex> lk(ThreadCreationMutex);
+            for (auto &Thread : Threads) {
+              FlushCodeRange(Thread, (FaultAddress & ~PAGE_MASK), PAGE_SIZE);
+            }
+            mprotect((void*)(FaultAddress & ~PAGE_MASK), PAGE_SIZE, PROT_READ | PROT_WRITE);
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
   }
 
   void ConfigureAOTGen(FEXCore::Core::InternalThreadState *Thread, std::set<uint64_t> *ExternalBranches, uint64_t SectionMaxAddress) {
