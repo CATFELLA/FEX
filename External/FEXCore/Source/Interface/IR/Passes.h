@@ -17,6 +17,7 @@ std::unique_ptr<FEXCore::IR::Pass> CreateIRCompaction();
 std::unique_ptr<FEXCore::IR::RegisterAllocationPass> CreateRegisterAllocationPass(FEXCore::IR::Pass* CompactionPass, bool OptimizeSRA);
 std::unique_ptr<FEXCore::IR::Pass> CreateStaticRegisterAllocationPass();
 std::unique_ptr<FEXCore::IR::Pass> CreateLongDivideEliminationPass();
+std::unique_ptr<FEXCore::IR::Pass> CreateStackAccessTSORemovalPass();
 
 namespace Validation {
 std::unique_ptr<FEXCore::IR::Pass> CreateIRValidation();

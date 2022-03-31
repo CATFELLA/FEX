@@ -39,6 +39,8 @@ void PassManager::AddDefaultPasses(bool InlineConstants, bool StaticRegisterAllo
     // only do SRA if enabled and JIT
     if (InlineConstants && StaticRegisterAllocation)
       InsertPass(CreateStaticRegisterAllocationPass());
+
+    InsertPass(CreateStackAccessTSORemovalPass());
   }
   else {
     // only do SRA if enabled and JIT
